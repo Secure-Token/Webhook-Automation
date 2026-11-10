@@ -1,0 +1,75 @@
+# Secure Tokens - webhook automation prototype. All components are free/open source.
+x-backend: &backend
+  build: ./backend
+  env_file: [.env]
+  environment: &backend-env
+    RUN_MODE: full
+    DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-st}:${POSTGRES_PASSWORD:-st_dev_password}@postgres:5432/${POSTGRES_DB:-securetokens}
+    RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-guest}:${RABBITMQ_DEFAULT_PASS:-guest}@rabbitmq:5672/
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-st}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-st_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-securetokens}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-st}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports: ["15672:15672"]   # management UI (guest/guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  api:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      SEED_DEMO: "true"
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  publisher:           # transactional-outbox -> RabbitMQ
+    <<: *backend
+    command: ["python", "-m", "app.workers.run", "publisher"]
+    depends_on:
+      api: {condition: service_healthy}
+
+  worker:              # RabbitMQ -> signed HTTP webhooks + retry poller
+    <<: *backend
+    command: ["python", "-m", "app.workers.run", "worker"]
+    depends_on:
+      api: {condition: service_healthy}
+
+  receiver:            # sample external subscriber
+    build: ./receiver
+    env_file: [.env]
+    environment:
+      RECEIVER_DB_PATH: /data/receiver.db
+    volumes: [receiverdata:/data]
+    ports: ["9000:9000"]
+
+  frontend:
+    build: ./frontend
+    ports: ["5173:80"]
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  receiverdata:
