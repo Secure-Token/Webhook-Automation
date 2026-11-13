@@ -11,3 +11,9 @@ node_modules/
 frontend/dist/
 .idea/
 .vscode/
+
+# local run logs
+*.log
+
+# local-only source document (not for the repo)
+docs/Secure-Token-Technical-Audit-Report.pdf
