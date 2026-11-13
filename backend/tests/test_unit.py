@@ -71,3 +71,53 @@ def test_settlement_calculation_limits_and_partial():
     partial = calculate_credit(5000, 5.0, 1000, 10.0)
     assert partial["eligible_credit"] == 10.0 and partial["settlement_status"] == "PARTIALLY_SETTLED"
     assert calculate_credit(5000, 5.0, 1000, 0)["settlement_status"] == "DEFERRED_NO_RESERVE"
+
+
+def _pending_delivery(db):
+    from app.ids import new_id
+    from app.models import EventRecord, WebhookDelivery, WebhookSubscription
+    from app.models import Developer
+    from app.security.secrets_store import store_secret
+    dev = db.query(Developer).first()
+    ref = store_secret(db, "whsec_test")
+    sub = WebhookSubscription(id=new_id("sub"), developer_id=dev.id, subscriber_name="s",
+                              endpoint_url="http://localhost:9000/x", event_types=["*"],
+                              secret_reference=ref, status="ACTIVE")
+    ev = EventRecord(id=new_id("evt"), event_type="webhook.test", schema_version="1", developer_id=None,
+                     payload={"event_id": "x"}, occurred_at=__import__("app.ids", fromlist=["utcnow"]).utcnow(),
+                     publication_status="PUBLISHED")
+    db.add_all([sub, ev]); db.flush()
+    return sub, ev
+
+
+def test_stale_in_progress_delivery_is_recovered(db):
+    from datetime import timedelta
+    from app.ids import new_id, utcnow
+    from app.models import WebhookDelivery
+    from app.services import webhook_service as ws
+    sub, ev = _pending_delivery(db)
+    d = WebhookDelivery(id=new_id("dlv"), event_id=ev.id, subscription_id=sub.id, attempt_number=1,
+                        delivery_status="IN_PROGRESS", attempted_at=utcnow() - timedelta(hours=1))
+    fresh = WebhookDelivery(id=new_id("dlv"), event_id=ev.id, subscription_id=sub.id, attempt_number=2,
+                            delivery_status="IN_PROGRESS", attempted_at=utcnow())
+    db.add_all([d, fresh]); db.commit()
+    assert ws.recover_stale_in_progress(db) == 1
+    db.refresh(d); db.refresh(fresh)
+    assert d.delivery_status != "IN_PROGRESS"   # re-attempted (missing secret -> temporary failure)
+    assert d.attempted_at > utcnow() - timedelta(minutes=1)
+    assert fresh.delivery_status == "IN_PROGRESS"  # recent attempt left alone
+
+
+def test_retry_creates_successor_atomically(db):
+    from app.ids import new_id, utcnow
+    from app.models import WebhookDelivery
+    from app.services import webhook_service as ws
+    sub, ev = _pending_delivery(db)
+    d = WebhookDelivery(id=new_id("dlv"), event_id=ev.id, subscription_id=sub.id, attempt_number=1,
+                        delivery_status="RETRY_SCHEDULED", next_retry_at=utcnow())
+    db.add(d); db.commit()
+    assert ws.run_due_retries(db) == 1
+    db.refresh(d)
+    assert d.delivery_status == "FAILED"
+    rows = db.query(WebhookDelivery).filter_by(event_id=ev.id, attempt_number=2).all()
+    assert len(rows) == 1

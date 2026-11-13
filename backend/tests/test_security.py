@@ -138,3 +138,8 @@ def test_payloads_exclude_prompts_and_sources(env):
     for e in env.api.get("/api/v1/events", headers=DEV).json():
         text = json.dumps(env.api.get(f"/api/v1/events/{e['id']}", headers=DEV).json()["payload"])
         assert "Add caching layer" not in text  # task description (prompt) never leaves the platform
+
+
+def test_non_ascii_api_key_is_401_not_500(api):
+    r = api.get("/api/v1/tasks", headers={"X-API-Key": "këy".encode("latin-1")})
+    assert r.status_code == 401

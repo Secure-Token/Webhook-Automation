@@ -154,18 +154,37 @@ def process_event_message(db: Session, message: dict, client: httpx.Client | Non
         perform_attempt(db, d.id, client)
 
 
+def recover_stale_in_progress(db: Session, client: httpx.Client | None = None) -> int:
+    """Re-queue attempts stuck IN_PROGRESS (worker crashed mid-send). At-least-once: receivers deduplicate."""
+    settings = get_settings()
+    cutoff = utcnow() - timedelta(seconds=settings.webhook_timeout_seconds * 3 + 30)
+    stale = db.scalars(select(WebhookDelivery.id).where(
+        WebhookDelivery.delivery_status == "IN_PROGRESS", WebhookDelivery.attempted_at < cutoff)).all()
+    count = 0
+    for did in stale:
+        res = db.execute(update(WebhookDelivery).where(
+            WebhookDelivery.id == did, WebhookDelivery.delivery_status == "IN_PROGRESS",
+            WebhookDelivery.attempted_at < cutoff).values(delivery_status="PENDING"))
+        db.commit()
+        if res.rowcount == 1:
+            perform_attempt(db, did, client)
+            count += 1
+    return count
+
+
 def run_due_retries(db: Session, client: httpx.Client | None = None) -> int:
+    count = recover_stale_in_progress(db, client)
     due = db.scalars(select(WebhookDelivery).where(
         WebhookDelivery.delivery_status == "RETRY_SCHEDULED",
         WebhookDelivery.next_retry_at <= utcnow())).all()
-    count = 0
     for old in due:
-        # Atomic claim so two workers never retry the same attempt.
+        # Atomic claim so two workers never retry the same attempt. The claim and the next attempt
+        # row are committed together: a crash can never leave a failed attempt without a successor.
         res = db.execute(update(WebhookDelivery).where(
             WebhookDelivery.id == old.id, WebhookDelivery.delivery_status == "RETRY_SCHEDULED")
             .values(delivery_status="FAILED"))
-        db.commit()
         if res.rowcount != 1:
+            db.rollback()
             continue
         nxt = WebhookDelivery(id=new_id("dlv"), event_id=old.event_id, subscription_id=old.subscription_id,
                               attempt_number=old.attempt_number + 1, delivery_status="PENDING")

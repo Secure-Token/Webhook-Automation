@@ -37,7 +37,7 @@ def get_db():
 def get_principal(x_api_key: str | None = Header(default=None), db: Session = Depends(get_db)) -> Principal:
     if not x_api_key:
         raise HTTPException(401, "Missing X-API-Key header")
-    if hmac.compare_digest(x_api_key, get_settings().admin_api_key):
+    if hmac.compare_digest(x_api_key.encode(), get_settings().admin_api_key.encode()):
         return Principal(developer=None, is_admin=True)
     dev = db.scalar(select(Developer).where(Developer.api_key_hash == hash_api_key(x_api_key)))
     if dev is None:
