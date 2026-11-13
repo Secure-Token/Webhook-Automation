@@ -8,7 +8,10 @@ const EVENTS = ['task.created', 'snapshot.baseline.created', 'execution.started'
 export default function Webhooks() {
   const { data: subs, error, reload } = usePoll('/api/v1/webhooks/subscriptions')
   const [name, setName] = useState('Sample receiver')
-  const [url, setUrl] = useState('http://receiver:9000/receiver/webhooks/secure-tokens')
+  // Default suits lite mode (no Docker). Under Docker Compose set VITE_DEFAULT_WEBHOOK_URL at build time to
+  // http://receiver:9000/receiver/webhooks/secure-tokens, since `receiver` only resolves inside the compose network.
+  const [url, setUrl] = useState(
+    import.meta.env.VITE_DEFAULT_WEBHOOK_URL || 'http://localhost:9000/receiver/webhooks/secure-tokens')
   const [types, setTypes] = useState(new Set(EVENTS))
   const [created, setCreated] = useState(null)
   const [msg, setMsg] = useState(null)
@@ -23,6 +26,14 @@ export default function Webhooks() {
   const create = async () => {
     const r = await run(() => api('/api/v1/webhooks/subscriptions', { method: 'POST', body: { subscriber_name: name, endpoint_url: url, event_types: [...types] } }))
     if (r) setCreated(r)
+  }
+  const [edit, setEdit] = useState(null) // { id, value } while a row's URL is being edited inline
+  const saveUrl = async () => {
+    const next = edit.value.trim()
+    if (!next) { setErr('Endpoint URL cannot be empty'); return }
+    const r = await run(() => api(`/api/v1/webhooks/subscriptions/${edit.id}`, { method: 'PATCH', body: { endpoint_url: next } }),
+      () => 'Endpoint updated. Use "Retry now" on the Deliveries page (admin key) or wait for the next scheduled retry.')
+    if (r) setEdit(null)
   }
   const configureReceiver = async () => {
     try {
@@ -49,12 +60,17 @@ export default function Webhooks() {
     </div>}
     <Table rows={subs} cols={[
       { h: 'Subscription', r: s => <Mono>{s.id}</Mono> }, { h: 'Subscriber', r: s => s.subscriber_name },
-      { h: 'Endpoint', r: s => <Mono>{s.endpoint_url}</Mono> },
+      { h: 'Endpoint', r: s => <code className="endpoint" title={s.endpoint_url}>{s.endpoint_url.split(/(?<=\/)/).map((p, i) => <span key={i}>{p}<wbr /></span>)}</code> },
       { h: 'Events', r: s => s.event_types.length === EVENTS.length ? 'all' : s.event_types.join(', ') },
       { h: 'Status', r: s => <Badge value={s.status} /> }, { h: 'Created', r: s => fmt(s.created_at) },
       { h: 'Actions', r: s => <>
         <button onClick={() => run(() => api(`/api/v1/webhooks/subscriptions/${s.id}`, { method: 'PATCH', body: { status: s.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' } }))}>{s.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}</button>{' '}
         <button onClick={() => run(() => api(`/api/v1/webhooks/subscriptions/${s.id}/test`, { method: 'POST' }), d => `Test delivery: ${d.delivery_status} ${d.response_code ?? ''} ${d.error_message ?? ''}`)}>Test</button>{' '}
+        {edit?.id === s.id
+          ? <><input className="wide" value={edit.value} onChange={e => setEdit({ ...edit, value: e.target.value })}
+              onKeyDown={e => e.key === 'Enter' && saveUrl()} autoFocus />{' '}
+            <button onClick={saveUrl}>Save</button>{' '}<button onClick={() => setEdit(null)}>Cancel</button>{' '}</>
+          : <><button onClick={() => setEdit({ id: s.id, value: s.endpoint_url })}>Edit URL</button>{' '}</>}
         <button onClick={() => setHist(s.id)}>History</button></> }]} />
     {hist && <div className="panel"><h3>Delivery history for <Mono>{hist}</Mono></h3>
       <Table rows={Array.isArray(history.data) ? history.data : []} cols={[

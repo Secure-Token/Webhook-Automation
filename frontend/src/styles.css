@@ -25,6 +25,8 @@ button { background:var(--pri); color:#fff; border:0; border-radius:6px; padding
 button:disabled { background:#b9c1d3; cursor:not-allowed; }
 input, select { border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
 input.wide { width:420px; max-width:100%; }
+code.endpoint { white-space:normal; word-break:normal; overflow-wrap:normal; display:inline-block; width:270px; }
+td input.wide { width:340px; }
 .opts { margin:8px 0; display:flex; gap:12px; flex-wrap:wrap; align-items:center; } .opts label { font-size:12px; }
 a { color:var(--pri); cursor:pointer; } .muted { color:var(--muted); }
 .error { background:#fef3f2; color:var(--bad); border:1px solid #fecdca; padding:8px 12px; border-radius:6px; margin-bottom:10px; }
